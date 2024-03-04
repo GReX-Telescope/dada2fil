@@ -1,6 +1,6 @@
 use clap::Parser;
 use hifitime::prelude::*;
-use psrdada::builder::DadaClientBuilder;
+use psrdada::client::DadaClient;
 use sigproc_filterbank::write::WriteFilterbank;
 use std::{fs::File, io::Write, str::FromStr};
 
@@ -20,7 +20,7 @@ fn valid_dada_key(s: &str) -> Result<i32, String> {
 
 fn main() {
     let args = Args::parse();
-    let mut client = DadaClientBuilder::new(args.key).build().unwrap();
+    let mut client = DadaClient::new(args.key).expect("Could not connect to the PSRDADA buffer");
     let (mut header_client, mut data_client) = client.split();
     // Read one frame from the header to get the filterbank metadata
     let metadata = header_client.pop_header().unwrap();
