@@ -2,7 +2,11 @@ use clap::Parser;
 use hifitime::prelude::*;
 use psrdada::client::DadaClient;
 use sigproc_filterbank::write::WriteFilterbank;
-use std::{fs::File, io::Write, str::FromStr};
+use std::{
+    fs::File,
+    io::{prelude::*, BufWriter},
+    str::FromStr,
+};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -57,8 +61,8 @@ fn main() {
     let foff = -bw / nchan as f64;
     let tsamp = tsamp / 1e6; // Heimdall wants us, sigproc wants s
     let fch1 = freq + bw / 2.0 - bw / nchan as f64;
-    // Setup the filterbank file
-    let mut file = File::create(args.filename).expect("Could not create file");
+    // Setup the buffered filterbank file
+    let mut fb_writer = BufWriter::new(File::create(args.filename).expect("Could not create file"));
     // We need, fch1, foff, tsamp
     let mut fb = WriteFilterbank::<f32>::new(nchan, 1);
     // Setup the headers
@@ -67,20 +71,23 @@ fn main() {
     fb.tsamp = Some(tsamp);
     fb.tstart = Some(utc_start.to_mjd_utc_days());
     // Write the header
-    file.write_all(&fb.header_bytes()).unwrap();
+    fb_writer.write_all(&fb.header_bytes()).unwrap();
+    fb_writer.flush().expect("Couldn't flush fb header output");
     // Stream in the data forever
     loop {
         // Read all the bytes from this block
         if let Some(bytes) = data_client.reader().pop() {
-            // This vector of bytes is [[CH0 CH1 CH2 ... CH(nchan-1)] [CH0 CH1 CH2 ... CH(nchan-1)]] for N samples
+            // This vector of bytes is [[CH0 CH1 CH2 ... CH(nchan-1)] [CH0 CH1 CH2 ... CH(nchan-1)]]
             // 4 * nchan bytes per time sample
             for chunk in bytes.chunks_exact(4 * nchan) {
                 // Reinterpret this as an array of float32s
                 let ptr = chunk.as_ptr() as *const f32;
                 let floats: &[f32] = unsafe { std::slice::from_raw_parts(ptr, nchan) };
                 // And write to the file
-                file.write_all(&fb.pack(floats)).unwrap();
+                fb_writer.write_all(&fb.pack(floats)).unwrap();
             }
+            // Flush the buffer once we've written all the time
+            fb_writer.flush().expect("Couldn't flush fb output");
         } else {
             eprintln!("PSRDADA signalled end of data");
             break;
