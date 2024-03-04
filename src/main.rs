@@ -1,6 +1,5 @@
 use clap::Parser;
 use hifitime::prelude::*;
-use lending_iterator::lending_iterator::LendingIterator;
 use psrdada::builder::DadaClientBuilder;
 use sigproc_filterbank::write::WriteFilterbank;
 use std::{fs::File, io::Write, str::FromStr};
