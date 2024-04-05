@@ -1,6 +1,6 @@
 use clap::Parser;
 use hifitime::prelude::*;
-use psrdada::client::DadaClient;
+use psrdada::prelude::*;
 use sigproc_filterbank::write::WriteFilterbank;
 use std::{
     fs::File,
@@ -23,11 +23,13 @@ fn valid_dada_key(s: &str) -> Result<i32, String> {
 }
 
 fn main() {
+    // Parse input arguments and connect to the PSRDADA buffer
     let args = Args::parse();
-    let mut client = DadaClient::new(args.key).expect("Could not connect to the PSRDADA buffer");
+    let mut client = HduClient::connect(args.key).expect("Could not connect to the PSRDADA buffer");
     let (mut header_client, mut data_client) = client.split();
+
     // Read one frame from the header to get the filterbank metadata
-    let metadata = header_client.pop_header().unwrap();
+    let metadata = header_client.read_header().unwrap();
     let freq: f64 = metadata
         .get("FREQ")
         .expect("Header missing FREQ")
@@ -57,10 +59,14 @@ fn main() {
     let utc_start_str = metadata.get("UTC_START").expect("Header missing UTC_START");
     let fmt = Format::from_str("%Y-%m-%d-%H:%M:%S").unwrap();
     let utc_start = Epoch::from_str_with_format(utc_start_str, fmt).expect("Not a timestamp");
+
     // Compute the data needed for the filterbank file header
-    let foff = -bw / nchan as f64;
+    let start_freq = freq - (bw / 2.0);
+    let chan_width = bw / nchan as f64;
+    let fch1 = start_freq + chan_width / 2.0;
+    let foff = bw / nchan as f64;
     let tsamp = tsamp / 1e6; // Heimdall wants us, sigproc wants s
-    let fch1 = freq + bw / 2.0 - bw / nchan as f64;
+
     // Setup the buffered filterbank file
     let mut fb_writer = BufWriter::new(File::create(args.filename).expect("Could not create file"));
     // We need, fch1, foff, tsamp
@@ -69,28 +75,24 @@ fn main() {
     fb.fch1 = Some(fch1);
     fb.foff = Some(foff);
     fb.tsamp = Some(tsamp);
-    fb.tstart = Some(utc_start.to_mjd_utc_days());
+    fb.tstart = Some(utc_start.to_mjd_tai_days());
     // Write the header
     fb_writer.write_all(&fb.header_bytes()).unwrap();
     fb_writer.flush().expect("Couldn't flush fb header output");
+
     // Stream in the data forever
-    loop {
-        // Read all the bytes from this block
-        if let Some(bytes) = data_client.reader().pop() {
-            // This vector of bytes is [[CH0 CH1 CH2 ... CH(nchan-1)] [CH0 CH1 CH2 ... CH(nchan-1)]]
-            // 4 * nchan bytes per time sample
-            for chunk in bytes.chunks_exact(4 * nchan) {
-                // Reinterpret this as an array of float32s
-                let ptr = chunk.as_ptr() as *const f32;
-                let floats: &[f32] = unsafe { std::slice::from_raw_parts(ptr, nchan) };
-                // And write to the file
-                fb_writer.write_all(&fb.pack(floats)).unwrap();
-            }
-            // Flush the buffer once we've written all the time
-            fb_writer.flush().expect("Couldn't flush fb output");
-        } else {
-            eprintln!("PSRDADA signalled end of data");
-            break;
+    let mut reader = data_client.reader().unwrap();
+    while let Some(mut read_block) = reader.next() {
+        let bytes = read_block.block();
+        for chunk in bytes.chunks_exact(4 * nchan) {
+            // Reinterpret this as an array of float32s
+            let ptr = chunk.as_ptr() as *const f32;
+            let floats: &[f32] = unsafe { std::slice::from_raw_parts(ptr, nchan) };
+            // And write to the file
+            fb_writer.write_all(&fb.pack(floats)).unwrap();
         }
+        // Flush the buffer once we've written all the time
+        fb_writer.flush().expect("Couldn't flush fb output");
     }
+    eprintln!("PSRDADA signalled end of data");
 }
